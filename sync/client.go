@@ -33,8 +33,17 @@ type DefaultClient struct {
 	nextMu     sync.Mutex
 	next       int
 	handlersMu sync.Mutex
-	handlers   map[string]chan *tgsync.Response
+	handlers   map[string]*pendingRequest
 	socket     *websocket.Conn
+}
+
+// pendingRequest is the per-request response handler. done is closed by the
+// request's cancellation goroutine to tell responsesWorker to stop delivering;
+// the channel ch is NEVER closed (responsesWorker is its only sender), so a
+// late response can never panic on send-to-closed.
+type pendingRequest struct {
+	ch   chan *tgsync.Response
+	done chan struct{}
 }
 
 // NewBoundClient returns a new sync DefaultClient that is bound to the provided
@@ -99,7 +108,7 @@ func newClient(ctx context.Context, log *zap.SugaredLogger, extractor func(ctx c
 		cancel:    cancel,
 		log:       log,
 		extractor: extractor,
-		handlers:  map[string]chan *tgsync.Response{},
+		handlers:  map[string]*pendingRequest{},
 	}
 
 	c.sugarOperations = &sugarOperations{c}

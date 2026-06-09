@@ -22,9 +22,9 @@ func (c *DefaultClient) publish(ctx context.Context, topic string, payload inter
 		return -1, err
 	}
 
-	res, ok := <-ch
-	if !ok {
-		return -1, errors.New("channel closed before getting response")
+	res, err := c.awaitResponse(ctx, ch)
+	if err != nil {
+		return -1, err
 	}
 	if res.Error != "" {
 		return -1, errors.New(res.Error)

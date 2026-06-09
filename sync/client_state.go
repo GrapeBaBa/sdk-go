@@ -59,9 +59,9 @@ func (c *DefaultClient) Barrier(ctx context.Context, state State, target int) (*
 	}
 
 	go func() {
-		res, ok := <-ch
-		if !ok {
-			b.C <- errors.New("channel closed before getting response")
+		res, err := c.awaitResponse(ctx, ch)
+		if err != nil {
+			b.C <- err
 		} else if res.Error == "" {
 			b.C <- nil
 		} else {
@@ -99,9 +99,9 @@ func (c *DefaultClient) SignalEntry(ctx context.Context, state State) (int64, er
 		return -1, err
 	}
 
-	res, ok := <-ch
-	if !ok {
-		return -1, errors.New("channel closed before getting response")
+	res, err := c.awaitResponse(ctx, ch)
+	if err != nil {
+		return -1, err
 	}
 	if res.Error != "" {
 		return -1, errors.New(res.Error)

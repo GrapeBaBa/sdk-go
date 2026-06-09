@@ -32,15 +32,21 @@ func (c *DefaultClient) responsesWorker() {
 			c.log.Fatalw("error while reading socket", "error", err)
 		}
 
-		var ch chan *sync.Response
+		var h *pendingRequest
 		c.handlersMu.Lock()
-		ch = c.handlers[res.ID]
+		h = c.handlers[res.ID]
 		c.handlersMu.Unlock()
 
-		if ch == nil {
+		if h == nil {
 			c.log.Warnf("no handler available for response: %s", res.ID)
 		} else {
-			ch <- res
+			// Deliver, or drop if the request was torn down. h.ch is never closed,
+			// so this can never panic on send-to-closed; h.done guarantees we never
+			// block forever on a receiver that has gone away.
+			select {
+			case h.ch <- res:
+			case <-h.done:
+			}
 		}
 	}
 
@@ -57,9 +63,10 @@ func (c *DefaultClient) makeRequest(ctx context.Context, req *sync.Request) (cha
 	}
 
 	ch := make(chan *sync.Response)
+	done := make(chan struct{})
 
 	c.handlersMu.Lock()
-	c.handlers[req.ID] = ch
+	c.handlers[req.ID] = &pendingRequest{ch: ch, done: done}
 	c.handlersMu.Unlock()
 
 	err := c.writeSocket(req)
@@ -77,13 +84,27 @@ func (c *DefaultClient) makeRequest(ctx context.Context, req *sync.Request) (cha
 		}
 
 		c.handlersMu.Lock()
-		close(c.handlers[req.ID])
 		delete(c.handlers, req.ID)
 		c.handlersMu.Unlock()
+		close(done) // tell responsesWorker to stop; ch is intentionally NOT closed
 		c.wg.Done()
 	}()
 
 	return ch, nil
+}
+
+// awaitResponse waits for the single response to a one-shot request, or for the
+// request or client context to be cancelled. The handler channel is never closed,
+// so the context is the only unblock.
+func (c *DefaultClient) awaitResponse(ctx context.Context, ch chan *sync.Response) (*sync.Response, error) {
+	select {
+	case res := <-ch:
+		return res, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.ctx.Done():
+		return nil, errors.New("client closed before getting response")
+	}
 }
 
 func (c *DefaultClient) readSocket() (*sync.Response, error) {
